@@ -10,6 +10,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # Para la autenticación JWT
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_jwt_identity
 
+# Necesario para las consultas OR y AND
+from sqlalchemy import or_, and_
+
+
 # Opcional: Cargar variables de entorno si aún tienes el archivo .env para SECRET_KEY
 # from dotenv import load_dotenv
 # load_dotenv() # Descomenta si usas .env para SECRET_KEY y JWT_SECRET_KEY
@@ -31,7 +35,7 @@ jwt = JWTManager(app)
 db = SQLAlchemy(app)
 
 # =========================================================
-# Definición de Modelos de Base de Datos (User modificado)
+# Definición de Modelos de Base de Datos
 # =========================================================
 
 class User(db.Model):
@@ -48,6 +52,7 @@ class User(db.Model):
     comments = db.relationship('Comment', backref='commenter', lazy=True)
     assigned_cards = db.relationship('CardAssignment', backref='user', lazy=True)
 
+
     def __repr__(self):
         return f'<User {self.username}>'
 
@@ -58,7 +63,7 @@ class User(db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-# --- Los otros modelos (Board, List, Card, Comment, CardAssignment) permanecen IGUAL ---
+
 class Board(db.Model):
     __tablename__ = 'boards'
     id = db.Column(db.Integer, primary_key=True)
@@ -66,7 +71,10 @@ class Board(db.Model):
     description = db.Column(db.Text, nullable=True)
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relaciones
     lists = db.relationship('List', backref='board', lazy=True, cascade="all, delete-orphan")
+
     def __repr__(self):
         return f'<Board {self.title}>'
 
@@ -75,9 +83,12 @@ class List(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(120), nullable=False)
     board_id = db.Column(db.Integer, db.ForeignKey('boards.id'), nullable=False)
-    order = db.Column(db.Integer, nullable=False, default=0)
+    order = db.Column(db.Integer, nullable=False, default=0) # Para el orden de las listas
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relaciones
     cards = db.relationship('Card', backref='list', lazy=True, cascade="all, delete-orphan")
+
     def __repr__(self):
         return f'<List {self.title}>'
 
@@ -89,11 +100,14 @@ class Card(db.Model):
     list_id = db.Column(db.Integer, db.ForeignKey('lists.id'), nullable=False)
     creator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     due_date = db.Column(db.DateTime, nullable=True)
-    order = db.Column(db.Integer, nullable=False, default=0)
+    order = db.Column(db.Integer, nullable=False, default=0) # Para el orden de las tarjetas
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relaciones
     comments = db.relationship('Comment', backref='card', lazy=True, cascade="all, delete-orphan")
     assignments = db.relationship('CardAssignment', backref='card', lazy=True, cascade="all, delete-orphan")
+
     def __repr__(self):
         return f'<Card {self.title}>'
 
@@ -104,19 +118,21 @@ class Comment(db.Model):
     card_id = db.Column(db.Integer, db.ForeignKey('cards.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
     def __repr__(self):
         return f'<Comment {self.id}>'
 
 class CardAssignment(db.Model):
     __tablename__ = 'card_assignments'
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True) # Un ID primario para esta tabla de unión
     card_id = db.Column(db.Integer, db.ForeignKey('cards.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     assigned_at = db.Column(db.DateTime, default=datetime.utcnow)
-    __table_args__ = (db.UniqueConstraint('card_id', 'user_id', name='_card_user_uc'),)
+
+    __table_args__ = (db.UniqueConstraint('card_id', 'user_id', name='_card_user_uc'),) # Asegura que una tarjeta no se asigne dos veces al mismo usuario
+
     def __repr__(self):
         return f'<CardAssignment Card:{self.card_id} User:{self.user_id}>'
-# =========================================================
 
 
 # =========================================================
@@ -172,13 +188,13 @@ def protected():
     return jsonify(logged_in_as=current_user_id), 200
 
 # =========================================================
-# Rutas de Usuarios (NUEVA SECCIÓN)
+# Rutas de Usuarios
 # =========================================================
 
 @app.route('/users/search', methods=['GET'])
 @jwt_required()
 def search_users():
-    current_user_id = get_jwt_identity() # Opcional: podrías filtrar para no mostrarte a ti mismo
+    current_user_id = get_jwt_identity()
     query = request.args.get('q', '') # Obtener el término de búsqueda
 
     if not query or len(query) < 2:
@@ -187,7 +203,7 @@ def search_users():
     # Buscar usuarios por username o email, excluyendo al usuario actual (opcional)
     users = User.query.filter(
         (User.username.ilike(f'%{query}%')) | (User.email.ilike(f'%{query}%'))
-    ).filter(User.id != current_user_id).all() # Excluir al usuario que está haciendo la búsqueda
+    ).filter(User.id != int(current_user_id)).all() # Excluir al usuario que está haciendo la búsqueda
 
     users_data = []
     for user in users:
@@ -198,9 +214,11 @@ def search_users():
         })
     return jsonify(users_data), 200
 
-#============================================================
-#                      TABLERO
-#============================================================
+
+# =========================================================
+# Rutas de Gestión de Tableros (Boards)
+# =========================================================
+
 @app.route('/boards', methods=['POST'])
 @jwt_required()
 def create_board():
@@ -230,21 +248,19 @@ def create_board():
 @app.route('/boards', methods=['GET'])
 @jwt_required()
 def get_user_boards():
-        current_user_id = get_jwt_identity()
-        boards = Board.query.filter_by(owner_id=current_user_id).all()
+    current_user_id = get_jwt_identity()
+    boards = Board.query.filter_by(owner_id=current_user_id).all()
 
-        # Esto YA devuelve un array vacío si 'boards' está vacío.
-        # No necesitas la condición 'if not boards:'.
-        boards_data = []
-        for board in boards:
-            boards_data.append({
-                "id": board.id,
-                "title": board.title,
-                "description": board.description,
-                "owner_id": board.owner_id,
-                "created_at": board.created_at.isoformat()
-            })
-        return jsonify(boards_data), 200 
+    boards_data = []
+    for board in boards:
+        boards_data.append({
+            "id": board.id,
+            "title": board.title,
+            "description": board.description,
+            "owner_id": board.owner_id,
+            "created_at": board.created_at.isoformat()
+        })
+    return jsonify(boards_data), 200
 
 @app.route('/boards/<int:board_id>', methods=['GET'])
 @jwt_required()
@@ -273,10 +289,10 @@ def update_board(board_id):
         return jsonify({"msg": "Board not found or you don't have permission"}), 404
 
     data = request.get_json()
-    title = data.get('title', board.title)
-    description = data.get('description', board.description)
+    title = data.get('title', board.title) # Permite actualizar solo el título
+    description = data.get('description', board.description) # Permite actualizar solo la descripción
 
-    if not title:
+    if not title: # El título sigue siendo obligatorio
         return jsonify({"msg": "Title cannot be empty"}), 400
 
     board.title = title
@@ -309,9 +325,10 @@ def delete_board(board_id):
     return jsonify({"msg": "Board deleted successfully"}), 200
 
 
-#=========================================================
-#                       LISTAS
-#=========================================================
+# =========================================================
+# Rutas de Gestión de Listas (Lists)
+# =========================================================
+
 @app.route('/boards/<int:board_id>/lists', methods=['POST'])
 @jwt_required()
 def create_list(board_id):
@@ -424,9 +441,35 @@ def delete_list(list_id):
 
     return jsonify({"msg": "List deleted successfully"}), 200
 
-#==========================================================
-#                       TARJETAS
-#==========================================================
+
+# =========================================================
+# Rutas de Gestión de Tarjetas (Cards)
+# =========================================================
+
+# Función auxiliar para verificar permisos de tarjeta
+def check_card_permission(card_id, current_user_id):
+    card = Card.query.get(card_id)
+    if not card:
+        return None, jsonify({"msg": "Card not found"}), 404
+
+    lst = List.query.get(card.list_id)
+    if not lst:
+        return None, jsonify({"msg": "Internal error: List for card not found"}), 500
+
+    board = Board.query.get(lst.board_id)
+    if not board:
+        return None, jsonify({"msg": "Internal error: Board for list not found"}), 500
+
+    # Permiso: el usuario es propietario del tablero O la tarjeta está asignada a él
+    is_board_owner = (str(board.owner_id) == current_user_id)
+    is_assigned_to_card = CardAssignment.query.filter_by(card_id=card_id, user_id=current_user_id).first() is not None
+
+    if not (is_board_owner or is_assigned_to_card):
+        return None, jsonify({"msg": "You do not have permission to access/modify this card."}), 403
+    
+    return card, None, None # Devuelve la tarjeta si hay permiso
+
+
 @app.route('/lists/<int:list_id>/cards', methods=['POST'])
 @jwt_required()
 def create_card(list_id):
@@ -436,10 +479,10 @@ def create_card(list_id):
     if not lst:
         return jsonify({"msg": "List not found"}), 404
 
-    # Verificar que el usuario tenga permiso sobre el tablero de la lista
+    # Verificar que el usuario tenga permiso sobre el tablero de la lista (solo el dueño puede crear tarjetas)
     board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
     if not board:
-        return jsonify({"msg": "List not found or you don't have permission to its board"}), 403 # 403 Forbidden
+        return jsonify({"msg": "List not found or you don't have permission to create cards here"}), 403 # 403 Forbidden
 
     data = request.get_json()
     title = data.get('title')
@@ -467,7 +510,7 @@ def create_card(list_id):
         title=title,
         description=description,
         list_id=list_id,
-        creator_id=current_user_id,
+        creator_id=int(current_user_id), # Asegurarse de que creator_id sea int
         due_date=due_date,
         order=order
     )
@@ -523,16 +566,9 @@ def get_list_cards(list_id):
 @jwt_required()
 def get_single_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     return jsonify({
         "id": card.id,
@@ -550,16 +586,9 @@ def get_single_card(card_id):
 @jwt_required()
 def update_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     data = request.get_json()
     title = data.get('title', card.title)
@@ -567,19 +596,19 @@ def update_card(card_id):
     due_date_str = data.get('due_date')
     order = data.get('order', card.order)
 
-    if not title: # El título sigue siendo obligatorio
+    if not title:
         return jsonify({"msg": "Title cannot be empty"}), 400
 
     if due_date_str:
         try:
-            if due_date_str.lower() == 'null': # Permite borrar la fecha de vencimiento
+            if due_date_str.lower() == 'null':
                 due_date = None
             else:
                 due_date = datetime.fromisoformat(due_date_str)
         except ValueError:
             return jsonify({"msg": "Invalid due_date format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SS) or 'null'"}), 400
     else:
-        due_date = card.due_date # Si no se envía, mantiene el valor actual
+        due_date = card.due_date
 
     card.title = title
     card.description = description
@@ -606,16 +635,9 @@ def update_card(card_id):
 @jwt_required()
 def move_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta (fuente)
-    source_list = List.query.get(card.list_id)
-    source_board = Board.query.filter_by(id=source_list.board_id, owner_id=current_user_id).first()
-    if not source_board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     data = request.get_json()
     new_list_id = data.get('new_list_id')
@@ -628,32 +650,37 @@ def move_card(card_id):
     if not target_list:
         return jsonify({"msg": "Target list not found"}), 404
 
-    # Verificar permiso sobre el tablero de destino también
+    # Verificar permiso sobre el tablero de destino: el usuario debe ser dueño del tablero destino
+    # o la tarjeta ya debe estar asignada a él Y el tablero destino debe ser el mismo que el origen.
+    # La lógica actual restringe mover solo dentro de tableros del mismo propietario.
+    # Para permitir mover a tableros donde el usuario está asignado, la lógica sería más compleja.
+    # Por simplicidad, se mantiene que el destino sea un tablero donde el usuario tiene control (dueño).
     target_board = Board.query.filter_by(id=target_list.board_id, owner_id=current_user_id).first()
-    if not target_board:
-        return jsonify({"msg": "Target list's board not found or you don't have permission"}), 403
+    if not target_board: # Si el usuario NO es el dueño del tablero de destino
+        # Y tampoco es dueño del tablero original, entonces no tiene permiso
+        # para mover la tarjeta A OTRA LISTA si la lista destino está en un tablero diferente al suyo
+        # o si no es dueño del tablero destino.
+        # Por ahora, solo el dueño del tablero original puede moverla entre sus propias listas.
+        source_list = List.query.get(card.list_id)
+        source_board = Board.query.get(source_list.board_id)
+        
+        # Si no es el dueño del tablero de destino Y la tarjeta NO es del tablero original del usuario
+        if str(source_board.owner_id) != current_user_id:
+             return jsonify({"msg": "You do not have permission to move this card to this target list."}), 403
 
-    # Si la tarjeta se mueve dentro del mismo tablero pero a otra lista, o a un tablero diferente
-    # Es importante que el usuario tenga permiso en AMBOS tableros si fueran diferentes.
-    # En este diseño, un usuario solo puede manipular tableros de su propiedad.
-    # Asumimos que los tableros de origen y destino deben ser del mismo usuario.
-    if source_board.id != target_board.id:
-         return jsonify({"msg": "Cannot move card to a different board at this moment. Only within your boards."}), 400
 
-
-    # Ajustar el orden de las tarjetas en la lista de origen (simplificado)
-    # y la lista de destino.
-    # Una implementación más robusta podría reindexar los órdenes.
-    # Por ahora, simplemente asignamos el nuevo list_id y order.
+    # Si la tarjeta se mueve dentro del mismo tablero (del cual el usuario tiene permiso)
+    # o a una lista en un tablero al que el usuario tiene acceso (como dueño)
+    # La restricción de 'same board owner' es para evitar que se mueva a un tablero arbitrario de otro usuario
+    # si el usuario actual solo está asignado a la tarjeta.
+    # El `check_card_permission` ya asegura que el usuario puede al menos ver/modificar la tarjeta.
 
     card.list_id = new_list_id
     if new_order is not None:
         card.order = new_order
     else:
-        # Si no se da un orden, ponla al final de la nueva lista
         max_order = db.session.query(db.func.max(Card.order)).filter_by(list_id=new_list_id).scalar()
         card.order = (max_order if max_order is not None else -1) + 1
-
 
     db.session.commit()
 
@@ -671,39 +698,27 @@ def move_card(card_id):
 @jwt_required()
 def delete_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     db.session.delete(card)
     db.session.commit()
 
     return jsonify({"msg": "Card deleted successfully"}), 200
 
-#==========================================================
-#                       Assignacion
-#==========================================================
+# =========================================================
+# Rutas para Asignaciones y Comentarios
+# =========================================================
+
+# --- Rutas para Asignaciones de Tarjetas ---
 @app.route('/cards/<int:card_id>/assign', methods=['POST'])
 @jwt_required()
 def assign_user_to_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     data = request.get_json()
     user_to_assign_id = data.get('user_id')
@@ -715,7 +730,6 @@ def assign_user_to_card(card_id):
     if not user_to_assign:
         return jsonify({"msg": "User to assign not found"}), 404
 
-    # Verificar si ya está asignado
     existing_assignment = CardAssignment.query.filter_by(card_id=card_id, user_id=user_to_assign_id).first()
     if existing_assignment:
         return jsonify({"msg": "User already assigned to this card"}), 409
@@ -738,18 +752,11 @@ def assign_user_to_card(card_id):
 @jwt_required()
 def unassign_user_from_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
-
-    data = request.get_json() # Usamos body para DELETE para especificar el user_id
+    data = request.get_json()
     user_to_unassign_id = data.get('user_id')
 
     if not user_to_unassign_id:
@@ -768,16 +775,9 @@ def unassign_user_from_card(card_id):
 @jwt_required()
 def get_card_assignments(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     assignments = CardAssignment.query.filter_by(card_id=card_id).all()
     assigned_users_data = []
@@ -799,16 +799,9 @@ def get_card_assignments(card_id):
 @jwt_required()
 def add_comment_to_card(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     data = request.get_json()
     content = data.get('content')
@@ -816,7 +809,7 @@ def add_comment_to_card(card_id):
     if not content:
         return jsonify({"msg": "Comment content cannot be empty"}), 400
 
-    new_comment = Comment(content=content, card_id=card_id, user_id=current_user_id)
+    new_comment = Comment(content=content, card_id=card_id, user_id=int(current_user_id)) # Asegurarse de que user_id sea int
     db.session.add(new_comment)
     db.session.commit()
 
@@ -835,16 +828,9 @@ def add_comment_to_card(card_id):
 @jwt_required()
 def get_card_comments(card_id):
     current_user_id = get_jwt_identity()
-    card = Card.query.get(card_id)
-
-    if not card:
-        return jsonify({"msg": "Card not found"}), 404
-
-    # Verificar permiso sobre el tablero de la tarjeta
-    lst = List.query.get(card.list_id)
-    board = Board.query.filter_by(id=lst.board_id, owner_id=current_user_id).first()
-    if not board:
-        return jsonify({"msg": "Card not found or you don't have permission to its board"}), 403
+    card, error_response, status_code = check_card_permission(card_id, current_user_id)
+    if error_response:
+        return error_response, status_code
 
     comments = Comment.query.filter_by(card_id=card_id).order_by(Comment.created_at.asc()).all()
     comments_data = []
@@ -869,7 +855,7 @@ def update_comment(comment_id):
     if not comment:
         return jsonify({"msg": "Comment not found"}), 404
 
-    # Verificar que el usuario sea el autor del comentario
+    # Para editar/eliminar comentario, debe ser el propio creador del comentario
     if str(comment.user_id) != current_user_id:
         return jsonify({"msg": "You do not have permission to update this comment"}), 403
 
@@ -902,7 +888,7 @@ def delete_comment(comment_id):
     if not comment:
         return jsonify({"msg": "Comment not found"}), 404
 
-    # Verificar que el usuario sea el autor del comentario
+    # Para editar/eliminar comentario, debe ser el propio creador del comentario
     if str(comment.user_id) != current_user_id:
         return jsonify({"msg": "You do not have permission to delete this comment"}), 403
 
@@ -912,15 +898,15 @@ def delete_comment(comment_id):
     return jsonify({"msg": "Comment deleted successfully"}), 200
 
 # =========================================================
-#                   Fitlros
+# Rutas de Filtrado de Tarjetas
 # =========================================================
+
 @app.route('/cards/filter', methods=['GET'])
 @jwt_required()
 def filter_cards():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity()) # Convertir a int
 
     # Obtener los parámetros de consulta de la URL
-    # request.args.get('param_name') permite acceder a los query parameters
     user_id_filter = request.args.get('user_id', type=int) # Para tarjetas asignadas a este user_id
     creator_id_filter = request.args.get('creator_id', type=int) # Para tarjetas creadas por este user_id
     due_date_start_str = request.args.get('due_date_start')
@@ -929,22 +915,21 @@ def filter_cards():
     list_id_filter = request.args.get('list_id', type=int)
     title_contains = request.args.get('title_contains')
 
-    # Primero, asegurarnos de que el usuario solo pueda filtrar sus propios tableros/listas/tarjetas.
-    # Obtenemos todos los IDs de los tableros que posee el usuario actual.
-    user_owned_board_ids = [board.id for board in Board.query.filter_by(owner_id=current_user_id).all()]
-    if not user_owned_board_ids:
-        return jsonify({"msg": "No boards found for this user, so no cards to filter."}), 200
+    # --- Lógica principal de acceso: el usuario es propietario del tablero O la tarjeta está asignada a él ---
+    # Esta es la base de las tarjetas que el usuario tiene permitido ver/filtrar.
+    access_condition = or_(
+        Board.owner_id == current_user_id,
+        Card.id.in_(db.session.query(CardAssignment.card_id).filter(CardAssignment.user_id == current_user_id))
+    )
+    
+    # Consulta base: todas las tarjetas a las que el usuario tiene acceso
+    query = db.session.query(Card).join(List).join(Board).outerjoin(CardAssignment).filter(access_condition)
 
-    # Construir la consulta base para tarjetas que el usuario puede ver
-    # Esto es un poco más complejo porque las tarjetas se asocian a listas, y las listas a tableros.
-    # Necesitamos unir tablas para filtrar correctamente.
-    query = db.session.query(Card).join(List).join(Board).filter(Board.owner_id == current_user_id)
 
-    # Aplicar filtros basados en los parámetros
+    # Aplicar filtros adicionales basados en los parámetros
     if user_id_filter:
-        # Filtrar por asignaciones: unirse a CardAssignment y verificar el user_id
-        query = query.join(CardAssignment).filter(CardAssignment.user_id == user_id_filter)
-
+        query = query.filter(CardAssignment.user_id == user_id_filter)
+    
     if creator_id_filter:
         query = query.filter(Card.creator_id == creator_id_filter)
 
@@ -963,24 +948,16 @@ def filter_cards():
             return jsonify({"msg": "Invalid due_date_end format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SS)"}), 400
 
     if board_id_filter:
-        # Asegurarse de que el board_id solicitado pertenezca al usuario actual
-        if board_id_filter not in user_owned_board_ids:
-            return jsonify({"msg": "Board not found or you don't have permission"}), 403
         query = query.filter(Board.id == board_id_filter)
 
     if list_id_filter:
-        # Asegurarse de que la list_id solicitada pertenezca a un tablero del usuario actual
-        target_list = List.query.get(list_id_filter)
-        if not target_list or target_list.board_id not in user_owned_board_ids:
-             return jsonify({"msg": "List not found or you don't have permission"}), 403
         query = query.filter(List.id == list_id_filter)
 
     if title_contains:
-        # Filtrar por título (búsqueda parcial, case-insensitive)
         query = query.filter(Card.title.ilike(f'%{title_contains}%'))
 
-    # Ordenar por el orden de la lista y luego por el orden de la tarjeta
-    cards = query.order_by(List.order, Card.order).all()
+    # Ordenar y asegurar unicidad de resultados
+    cards = query.order_by(List.order, Card.order).distinct().all()
 
     cards_data = []
     for card in cards:
@@ -990,12 +967,10 @@ def filter_cards():
             if user:
                 assigned_users.append({
                     "user_id": user.id,
-                    "username": user.username
+                    "username": user.username,
+                    "email": user.email
                 })
-
-        # También podríamos obtener los comentarios si queremos incluirlos aquí,
-        # pero por ahora, solo la información de la tarjeta y asignaciones.
-
+        
         cards_data.append({
             "id": card.id,
             "title": card.title,
@@ -1006,24 +981,13 @@ def filter_cards():
             "order": card.order,
             "created_at": card.created_at.isoformat(),
             "updated_at": card.updated_at.isoformat(),
-            "assigned_users": assigned_users
+            "assigned_users": assigned_users,
+            "board_id": card.list.board_id # Aseguramos que board_id esté aquí
         })
 
     return jsonify(cards_data), 200
-# =========================================================
-# Rutas de prueba (mantener por ahora)
-# =========================================================
-
-@app.route('/')
-def index():
-    return jsonify(message="¡Bienvenido a la API de Trello Clone!")
-
-@app.route('/test')
-def test():
-    return jsonify(data={"name": "Test Item", "value": 123}, status="success")
 
 if __name__ == '__main__':
     with app.app_context():
-        db.create_all() # Asegúrate de que las tablas se creen si no existen
+        db.create_all()
     app.run(debug=True, port=5000)
-
